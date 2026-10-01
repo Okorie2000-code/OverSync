@@ -34,6 +34,17 @@ export type OrderStatus =
   | "expired";
 
 export type Chain = "ethereum" | "stellar";
+/** Listener identity: the Stellar side is observed through Soroban RPC. */
+export type ChainName = "ethereum" | "soroban";
+
+export interface ChainCursor {
+  chain: ChainName;
+  networkId: string;
+  /** Last fully processed Ethereum block / Soroban ledger. */
+  position: number;
+  /** Opaque RPC pagination cursor (Soroban), if any. */
+  cursor: string | null;
+}
 export type Direction = "eth_to_xlm" | "xlm_to_eth";
 
 export interface OrderRow {
@@ -192,6 +203,10 @@ export class OrdersRepository {
   // whose `fixture = 1` and is the only place those rows are deleted.
   private readonly countFixturesStmt: Statement;
   private readonly removeFixturesStmt: Statement;
+  private readonly getCursorStmt: Statement;
+  private readonly upsertCursorStmt: Statement;
+  private readonly insertProcessedEventStmt: Statement;
+  private readonly hasProcessedEventStmt: Statement;
 
   constructor(private readonly db: DatabaseT) {
     this.insertStmt = db.prepare(`
@@ -298,6 +313,72 @@ export class OrdersRepository {
     this.removeFixturesStmt = db.prepare(
       "DELETE FROM orders WHERE fixture = 1"
     );
+    this.getCursorStmt = db.prepare("SELECT * FROM chain_cursors WHERE chain = ?");
+    // Monotonic: a stale writer can never move the cursor backwards, and a
+    // write for a different network is a no-op (loadCursor rejects it first).
+    this.upsertCursorStmt = db.prepare(`
+      INSERT INTO chain_cursors (chain, network_id, position, cursor)
+      VALUES (:chain, :networkId, :position, :cursor)
+      ON CONFLICT (chain) DO UPDATE SET
+        position = excluded.position,
+        cursor = excluded.cursor,
+        updated_at = CAST(strftime('%s','now') AS INTEGER)
+      WHERE chain_cursors.network_id = excluded.network_id
+        AND excluded.position >= chain_cursors.position
+    `);
+    this.insertProcessedEventStmt = db.prepare(`
+      INSERT INTO processed_chain_events (event_key, chain, kind, position)
+      VALUES (:eventKey, :chain, :kind, :position)
+      ON CONFLICT (event_key) DO NOTHING
+    `);
+    this.hasProcessedEventStmt = db.prepare(
+      "SELECT event_key FROM processed_chain_events WHERE event_key = ?"
+    );
+  }
+
+  async getChainCursor(chain: ChainName): Promise<ChainCursor | null> {
+    const row = await this.get<{
+      chain: ChainName;
+      network_id: string;
+      position: number | string;
+      cursor: string | null;
+    }>(this.getCursorStmt, chain);
+    if (!row) return null;
+    return {
+      chain: row.chain,
+      networkId: row.network_id,
+      position: Number(row.position),
+      cursor: row.cursor ?? null
+    };
+  }
+
+  async saveChainCursor(input: {
+    chain: ChainName;
+    networkId: string;
+    position: number;
+    cursor?: string | null;
+  }): Promise<void> {
+    await this.run(this.upsertCursorStmt, {
+      chain: input.chain,
+      networkId: input.networkId,
+      position: input.position,
+      cursor: input.cursor ?? null
+    });
+  }
+
+  async hasProcessedEvent(eventKey: string): Promise<boolean> {
+    return (await this.get(this.hasProcessedEventStmt, eventKey)) !== undefined;
+  }
+
+  /** Marks an event as applied. Returns false if it was already recorded. */
+  async markEventProcessed(input: {
+    eventKey: string;
+    chain: ChainName;
+    kind: string;
+    position: number;
+  }): Promise<boolean> {
+    const result = await this.run(this.insertProcessedEventStmt, input);
+    return result.changes === 1;
   }
 
   private async run(stmt: Statement, ...params: any[]): Promise<StatementResult> {
@@ -364,8 +445,23 @@ export class OrdersRepository {
     return row ? rowToOrder(row) : null;
   }
 
-  async findByAddress(addr: string, limit = 50, offset = 0): Promise<OrderRow[]> {
-    const rows = await this.all<OrderDbRow>(this.byAddress, { addr, limit, offset });
+  async findByAddress(addr: string, limit = 50, offset = 0, createdAtGreaterThan?: number, createdAtLessThan?: number): Promise<OrderRow[]> {
+    let sql = `SELECT * FROM orders WHERE src_address = :addr OR dst_address = :addr`;
+    const params: any = { addr, limit, offset };
+    
+    if (createdAtGreaterThan !== undefined) {
+      sql = sql + " AND created_at > :created_at";
+      params.created_at = createdAtGreaterThan;
+    }
+    if (createdAtLessThan !== undefined) {
+      sql = sql + " AND created_at < :created_at";
+      params.created_at = createdAtLessThan;
+    }
+    
+    sql = sql + " LIMIT :limit OFFSET :offset";
+    
+    const stmt = this.db.prepare(sql);
+    const rows = await this.all<OrderDbRow>(stmt, params);
     return rows.map(rowToOrder);
   }
 

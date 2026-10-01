@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { SecretService } from "../../services/secret-service.js";
+import { SecretGateError } from "../../services/secret-service.js";
 
 export function secretsRoutes(secrets: SecretService): Router {
   const router = Router();
@@ -19,6 +20,14 @@ export function secretsRoutes(secrets: SecretService): Router {
     } catch (err) {
       if (err instanceof z.ZodError) {
         res.status(400).json({ error: "validation_error", details: err.errors });
+        return;
+      }
+      if (err instanceof SecretGateError) {
+        // Stable, code-carrying envelope for the secret gate (#254) so
+        // relayers can retry/conflict-resolve without string matching.
+        res
+          .status(409)
+          .json({ error: err.code, message: err.message });
         return;
       }
       if (err instanceof Error) {
