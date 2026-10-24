@@ -108,7 +108,7 @@
                   }
                 },
                 {
-                  "bytes": "8c0cc17a04942cc4f8e0fe0b302606d3108860c126428ba2ceeb5f9ed41c2b05"
+                  "bytes": "9093f9a83f5c01f567ef35f7438358d3d9011a61921b6c9fa1b951c2bb964571"
                 },
                 {
                   "u64": 600
@@ -368,7 +368,7 @@
                         "symbol": "hashlock"
                       },
                       "val": {
-                        "bytes": "8c0cc17a04942cc4f8e0fe0b302606d3108860c126428ba2ceeb5f9ed41c2b05"
+                        "bytes": "9093f9a83f5c01f567ef35f7438358d3d9011a61921b6c9fa1b951c2bb964571"
                       }
                     },
                     {

@@ -1,6 +1,13 @@
 import { Registry, Counter, Gauge, Histogram, collectDefaultMetrics } from "prom-client";
+import { redactSensitive } from "./redaction.js";
 
-export const registry = new Registry();
+class RedactingRegistry extends Registry {
+  override async metrics(): Promise<string> {
+    return redactSensitive(await super.metrics());
+  }
+}
+
+export const registry = new RedactingRegistry();
 
 collectDefaultMetrics({ register: registry, prefix: "coordinator_" });
 
